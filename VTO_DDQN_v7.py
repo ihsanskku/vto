@@ -1,8 +1,5 @@
 #VTO with DoubleDQN v7. (with reward, successfull/unsuccessful tasks , and episode cost graph, extended code with validation)....>> task comlexity function + bandwith + resource utlization
 
-import os
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
-
 import csv
 import gym
 from gym import spaces
@@ -13,6 +10,13 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 from tabulate import tabulate  # Import the tabulate library
+import wandb
+
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+
+
+#wandb.init(project="task_offloading1")
 
 class Task:
     def __init__(self, task_id, cpu_cores, data_size, memory_requirements, min_acceptable_delay, task_complexity):
@@ -388,6 +392,7 @@ def train_double_dqn(env, agent, num_episodes, batch_size, epsilon_decay, valida
     episode_rewards = []
     episode_losses = []
     validation_rewards = []
+    validation_reward = 0
     episode_cumulative_costs = []
     episode_successful_tasks = []
     episode_unsuccessful_tasks = []
@@ -445,38 +450,30 @@ def train_double_dqn(env, agent, num_episodes, batch_size, epsilon_decay, valida
             print("##############################################################")
             print(f"Episode {episode + 1}: Validation Reward = {validation_reward:.2f}")
             print("##############################################################")
+            wandb.log({ "Validation_reward": np.mean(validation_reward)}),
 
-        #print("-----------------------------------------------------------------------------------------------------------------------")
+        print("-----------------------------------------------------------------------------------------------------------------------")
         print(f"Episode {episode + 1}: Total Reward = {round(episode_reward, 2)}, Successful Tasks = {episode_successful}, Unsuccessful Tasks = {episode_unsuccessful}, Episode Cost = {round(episode_cumulative_cost,2)}, Epsilon={round(epsilon, 4)}")
-
-
-        # # print("Resource Utilization:")
-        # print("Vehicles:", env.resource_utilization['vehicles'])
-        # print("Road Side Units:", env.resource_utilization['road_side_units'])
-        # print("Cloud Servers:", env.resource_utilization['cloud_servers'])
 
         # Collect resource utilization data
         vehicle_utilization.append(env.resource_utilization['vehicles'])
         rsu_utilization.append(env.resource_utilization['road_side_units'])
         cloud_server_utilization.append(env.resource_utilization['cloud_servers'])
 
-        # # Print resource utilization at the end of the episode
+        # # # Print resource utilization at the end of the episode
         # print_resource_utilization(vehicle_utilization[episode], "Vehicle")
         # print_resource_utilization(rsu_utilization[episode], "RSU")
         # print_resource_utilization(cloud_server_utilization[episode], "Cloud Server")
 
-        print("-----------------------------------------------------------------------------------------------------------------------")
-
-        # # Display task assignments
-        # print("\nTask Assignments in this episode:")
-        # print("Task ID \t Assigned To \t Resource Type \t Resource ID")
-        # for assignment in episode_task_assignments:
-        #     task_id = assignment.get('task_id', 'N/A')
-        #     assigned_to = assignment.get('assigned_to', 'N/A')
-        #     resource_type = assignment.get('resource_type', 'N/A')
-        #     resource_id = assignment.get('resource_id', 'N/A')
-        #     print(f"{task_id} \t {assigned_to} \t\t {resource_type} \t\t {resource_id}")
-        # print("\n")
+        # Log summary statistics for this episode
+        wandb.log({
+            "Mean Episode Reward": np.mean(episode_rewards),
+            "Median Episode Reward": np.median(episode_rewards),
+            "Mean Successful Tasks": np.mean(episode_successful_tasks),
+            "Mean Unsuccessful Tasks": np.mean(episode_unsuccessful_tasks),
+            "Mean Episode Cumulative Cost": np.mean(episode_cumulative_costs),
+            "Epsilon": epsilon
+        })
 
     return episode_rewards, validation_rewards, episode_cumulative_costs, episode_successful_tasks, episode_unsuccessful_tasks, vehicle_utilization, rsu_utilization, cloud_server_utilization
 
@@ -495,48 +492,44 @@ def plot_resource_utilization(utilization_data, resource_name):
     plt.ylabel(f"{resource_name} Utilization")
     plt.title(f"{resource_name} Utilization Across Episodes")
     plt.tight_layout()  # Improve spacing
+    plt.savefig(f'figures\_resources_u1tilization Across Episodes_VTO_DDQN_v7_{resource_name}_{num_episodes}_{num_tasks}.png')
     plt.show()
 
 if __name__ == "__main__":
     num_tasks = 200
-    num_vehicles = 100
-    num_rsus = 3  # rsus (road side units)
-    num_cloud_servers = 2
+    num_vehicles = 50
+    num_rsus = 10  # rsus (road side units)
+    num_cloud_servers = 10
+
+    wandb.init(project="VTO v1", config={
+        "num_tasks": num_tasks,
+        "num_vehicles": num_vehicles,
+        "num_rsus": num_rsus,
+        "num_cloud_servers": num_cloud_servers
+    })
 
     env = TaskOffloadingEnv(num_tasks, num_vehicles, num_rsus, num_cloud_servers)
-
-    # # Display task and resource details before training
-    # print("Task and Resource Details before Training:")
-    # print("Task Details:")
-    # display_table(env.tasks, "Task")
-    # print("\nVehicle Details:")
-    # display_table(env.resource_availability['vehicles'], "Vehicle")
-    # print("\nRoad Side Units Details:")
-    # display_table(env.resource_availability['road_side_units'], "Road Side Unit")
-    # print("\nCloud Server Details:")
-    # display_table(env.resource_availability['cloud_servers'], "Cloud Server")
 
     state_dim = env.observation_space.shape[0]
     #print(state_dim)
     action_dim = env.action_space.n
-
     agent = DoubleDQNAgent(state_dim, action_dim)
 
     epsilon_decay = 0.995
     batch_size = 32
-    num_episodes = 800
+    num_episodes = 1000
 
     validation_interval = 10  # Validate the agent every 200 episodes
     num_validation_episodes = 10  # Number of episodes for validation
 
     episode_rewards, validation_rewards, episode_cumulative_costs, episode_successful_tasks, episode_unsuccessful_tasks, vehicle_utilization, rsu_utilization, cloud_server_utilization = train_double_dqn(env, agent, num_episodes, batch_size, epsilon_decay, validation_interval, num_validation_episodes)
 
-    # Saving episode rewards, successful tasks, and unsuccessful tasks to a CSV file
-    with open('episode_results.csv', 'w', newline='') as csvfile:
-        csv_writer = csv.writer(csvfile)
-        csv_writer.writerow(['Episode', 'Reward', 'Successful Tasks', 'Unsuccessful Tasks'])
-        for episode, (reward, successful, unsuccessful) in enumerate(zip(episode_rewards, episode_successful_tasks, episode_unsuccessful_tasks)):
-            csv_writer.writerow([episode, reward, successful, unsuccessful])
+    # # Saving episode rewards, successful tasks, and unsuccessful tasks to a CSV file
+    # with open('figures/episode_results.csv', 'w', newline='') as csvfile:
+    #     csv_writer = csv.writer(csvfile)
+    #     csv_writer.writerow(['Episode', 'Reward', 'Successful Tasks', 'Unsuccessful Tasks'])
+    #     for episode, (reward, successful, unsuccessful) in enumerate(zip(episode_rewards, episode_successful_tasks, episode_unsuccessful_tasks)):
+    #         csv_writer.writerow([episode, reward, successful, unsuccessful])
 
     max_reward = max(episode_rewards)
     normalized_episode_rewards = [reward / max_reward for reward in episode_rewards]
@@ -546,7 +539,7 @@ if __name__ == "__main__":
     plt.xlabel("Episode")
     plt.ylabel("Average Episode Reward")
     plt.title("Average Episode Rewards")
-    #plt.savefig('episode_rewards_VTO_DDQN_v5.png')
+    plt.savefig(f'figures\episode_rewards_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
     plt.show()
 
     # Plotting successful and unsuccessful tasks
@@ -556,7 +549,7 @@ if __name__ == "__main__":
     plt.ylabel("Number of Tasks")
     plt.title("Successful and Unsuccessful Tasks")
     plt.legend()
-    #plt.savefig('Successful_and_Unsuccessful_Tasks_VTO_DDQN_v5.png')
+    plt.savefig(f'figures\Successful_and_Unsuccessful_Tasks_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
     plt.show()
 
     # Plot cumulative cost graph at the end of each episode
@@ -565,7 +558,7 @@ if __name__ == "__main__":
     plt.ylabel("Cumulative Cost")
     plt.title("Episode Cumulative Costs")
     plt.legend()
-    #plt.savefig('episode_cumulative_cost_VTO_DDQN_v5.png')
+    plt.savefig(f'figures\episode_cumulative_cost_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
     plt.show()
 
     # Plot validation rewards
@@ -574,10 +567,28 @@ if __name__ == "__main__":
     plt.ylabel("Average Validation Reward")
     plt.title("Average Validation Rewards")
     plt.legend()
-    #plt.savefig('Average Validation Rewards_VTO_DDQN_v5.png')
+    plt.savefig(f'figures\Average Validation Rewards_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
     plt.show()
 
-     # Plot normalized resource utilization between 1% and 100% for each type of resource using bar plots
+    # Plot normalized resource utilization between 1% and 100% for each type of resource using bar plots
     plot_resource_utilization(vehicle_utilization, "Vehicle")
     plot_resource_utilization(rsu_utilization, "RSU")
     plot_resource_utilization(cloud_server_utilization, "Cloud Server")
+
+    # Calculate mean utilization values for each resource
+    mean_vehicle_utilization = np.mean(vehicle_utilization, axis=1)
+    mean_rsu_utilization = np.mean(rsu_utilization, axis=1)
+    mean_cloud_server_utilization = np.mean(cloud_server_utilization, axis=1)
+
+    x = [0, 1, 2]
+    y = [mean_vehicle_utilization[0], mean_rsu_utilization[0],
+         mean_cloud_server_utilization[0]]  # Mean utilization values
+    labels = ['Vehicles', 'RSUs', 'Cloud Servers']
+
+    plt.bar(x, y, tick_label=labels)
+    plt.xlabel('Resource')
+    plt.ylabel('Mean Utilization')
+    plt.title('Mean Resource Utilization, Vehicles, RSUs, and CLoud Servers')
+    plt.tight_layout()
+    plt.savefig(f'figures\Mean Resource Utilization_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
+    plt.show()
