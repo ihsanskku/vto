@@ -1,4 +1,5 @@
-#VTO with DoubleDQN v7. (with reward, successfull/unsuccessful tasks , and episode cost graph, extended code with validation)....>> task comlexity function + bandwith + resource utlization
+#VTO with DoubleDQN v4. (with reward, successfull/unsuccessful tasks , and episode cost graph, extended code with validation)....>> task comlexity function + bandwith
+
 
 import csv
 import gym
@@ -11,12 +12,12 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from tabulate import tabulate  # Import the tabulate library
 import wandb
-
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
-
-#wandb.init(project="task_offloading1")
+'''
+wandb.init(project="task_offloading")
+'''
 
 class Task:
     def __init__(self, task_id, cpu_cores, data_size, memory_requirements, min_acceptable_delay, task_complexity):
@@ -28,11 +29,10 @@ class Task:
         self.task_complexity = task_complexity
 
 class Vehicle:
-    def __init__(self, vehicle_id, cpu_cores, bandwidth, server_id):
+    def __init__(self, vehicle_id, cpu_cores, bandwidth):
         self.vehicle_id = vehicle_id
         self.cpu_cores = cpu_cores
         self.bandwidth = bandwidth
-        self.server_id = server_id
 
 class RoadSideUnit:
     def __init__(self, server_id, cpu_cores, bandwidth):
@@ -56,20 +56,19 @@ def complexity(cpu_cores, data_size, memory_requirements):
 def generate_tasks(num_tasks):
     tasks = []
     for i in range(num_tasks):
+        cpu_cores = random.randint(1, 10)
         data_size = random.randint(10, 100)
         memory_requirements = random.randint(10, 100)
-        min_acceptable_delay = random.randint(5, 25) # 5 to 25 second delay
-        cpu_cores = random.randint(1, 15)
+        min_acceptable_delay = round(random.uniform(0.1, 1.0), 2)
         task_complexity = complexity(cpu_cores, data_size, memory_requirements)
         tasks.append(Task(i, cpu_cores, data_size, memory_requirements, min_acceptable_delay, task_complexity))
     return tasks
 
 def create_resources(num_vehicles, num_rsus, num_cloud_servers):
-    vehicles = [Vehicle(i, random.randint(10, 15), random.randint(100, 500), i) for i in range(num_vehicles)]
-    road_side_units = [RoadSideUnit(i, random.randint(30, 50), random.randint(100, 500)) for i in range(num_rsus)]
-    cloud_servers = [CloudServer(i, random.randint(500, 500), random.randint(1000, 2000)) for i in range(num_cloud_servers)]
+    vehicles = [Vehicle(i, random.randint(2, 10), random.randint(100, 500)) for i in range(num_vehicles)]
+    road_side_units = [RoadSideUnit(i, random.randint(20, 30), random.randint(100, 500)) for i in range(num_rsus)]
+    cloud_servers = [CloudServer(i, random.randint(50, 100), random.randint(1000, 2000)) for i in range(num_cloud_servers)]
     return vehicles, road_side_units, cloud_servers
-
 
 # Custom Gym Environment
 class TaskOffloadingEnv(gym.Env):
@@ -86,59 +85,37 @@ class TaskOffloadingEnv(gym.Env):
         # Define the observation (state) space based on your scenario
         self.observation_space = spaces.Box(low=0, high=1, shape=(num_tasks * 5 + num_vehicles * 5 + num_rsus * 5 + num_cloud_servers * 5,))
 
-        # Initialize resource utilization dictionary
-        self.resource_utilization = {
-            'vehicles': [0] * num_vehicles,
-            'road_side_units': [0] * num_rsus,
-            'cloud_servers': [0] * num_cloud_servers
-        }
-
         # Initialize current task index and resource availability
         self.current_task_idx = 0
         self.resource_availability = {
-            'vehicles': [{'cores': vehicle.cpu_cores, 'delay': (2 + 1), 'cost': 0.15, 'distance': random.randint(100, 100), #(2 + 1) computation dealy +  nework latency
+            'vehicles': [{'cores': vehicle.cpu_cores, 'delay': 0.1, 'cost': 0.15, 'distance': random.randint(10, 100),
                           'bandwidth': random.randint(100, 500)}  # Assign bandwidth to vehicles
                          for vehicle in self.vehicles],
             'road_side_units': [
-                {'cores': road_side_unit.cpu_cores, 'delay': (0.3 + 2), 'cost': 0.25, 'distance': random.randint(100, 100), #(0.3 + 2) computation dealy +  nework latency
+                {'cores': road_side_unit.cpu_cores, 'delay': 0.2, 'cost': 0.25, 'distance': random.randint(10, 100),
                  'bandwidth': random.randint(100, 500)}  # Assign bandwidth to RSUs
                 for road_side_unit in self.road_side_units],
             'cloud_servers': [
-                {'cores': cloud_server.cpu_cores, 'delay': (0.1 + 3), 'cost': 0.35, 'distance':100,  #(0.1 + 3) computation dealy + nework latency
+                {'cores': cloud_server.cpu_cores, 'delay': 0.3, 'cost': 0.35, 'distance': random.randint(10, 100),
                  'bandwidth': random.randint(1000, 2000)}  # Assign bandwidth to Cloud Servers
                 for cloud_server in self.cloud_servers]
         }
-
-        # Initialize resource utilization at the beginning of each episode
-        self.resource_utilization = {
-            'vehicles': [0] * len(self.vehicles),
-            'road_side_units': [0] * len(self.road_side_units),
-            'cloud_servers': [0] * len(self.cloud_servers)
-        }
-
     def reset(self):
         # Reset the environment to initial state and return the initial observation
         self.current_task_idx = 0
         self.resource_availability = {
-            'vehicles': [{'cores': vehicle.cpu_cores, 'delay': (2 + 1), 'cost': 0.15, 'distance': random.randint(100, 100), #(2 + 1) computation dealy +  nework latency
+            'vehicles': [{'cores': vehicle.cpu_cores, 'delay': 0.1, 'cost': 0.15, 'distance': random.randint(10, 100),
                           'bandwidth': random.randint(100, 500)}  # Assign bandwidth to vehicles
                          for vehicle in self.vehicles],
             'road_side_units': [
-                {'cores': road_side_unit.cpu_cores, 'delay': (0.3 + 2), 'cost': 0.25, 'distance': random.randint(100, 100), #(0.3 + 2) computation dealy +  nework latency
+                {'cores': road_side_unit.cpu_cores, 'delay': 0.2, 'cost': 0.25, 'distance': random.randint(10, 100),
                  'bandwidth': random.randint(100, 500)}  # Assign bandwidth to RSUs
                 for road_side_unit in self.road_side_units],
             'cloud_servers': [
-                {'cores': cloud_server.cpu_cores, 'delay': (0.1 + 3), 'cost': 0.35, 'distance':100,  #(0.1 + 3) computation dealy + nework latency
+                {'cores': cloud_server.cpu_cores, 'delay': 0.3, 'cost': 0.35, 'distance': random.randint(10, 100),
                  'bandwidth': random.randint(1000, 2000)}  # Assign bandwidth to Cloud Servers
                 for cloud_server in self.cloud_servers]
         }
-       # Reset resource utilization at the beginning of each episode
-        self.resource_utilization = {
-            'vehicles': [0] * len(self.vehicles),
-            'road_side_units': [0] * len(self.road_side_units),
-            'cloud_servers': [0] * len(self.cloud_servers)
-        }
-
         return self._get_state()
 
     def _get_state(self):
@@ -157,7 +134,6 @@ class TaskOffloadingEnv(gym.Env):
                 state.append(resource['cost'])
                 state.append(resource['distance'])
                 state.append(resource['bandwidth'])  # Include bandwidth in state
-
         return state
 
     def step(self, action):
@@ -166,68 +142,27 @@ class TaskOffloadingEnv(gym.Env):
 
         processing_info = self._process_task(task, resource_type)
         if processing_info is not None:
-
-            resource_id = processing_info['resource_id']
-            if resource_type == 'vehicles':
-                self.resource_utilization['vehicles'][resource_id] += task.cpu_cores
-            elif resource_type == 'road_side_units':
-                self.resource_utilization['road_side_units'][resource_id] += task.cpu_cores
-            elif resource_type == 'cloud_servers':
-                self.resource_utilization['cloud_servers'][resource_id] += task.cpu_cores
-
-
             reward = self._calculate_reward(task, processing_info, resource_type)
-            task_assignment = {
-                'task_id': task.task_id,
-                'assigned_to': resource_type,
-                #'resource_type': resource_type,
-                'resource_id': processing_info['resource_id'],
-                'remaining_resource_core':processing_info['remaining_reource_core']
-            }
 
         else:
             reward = -1  # Set a large negative reward for unprocessable tasks
-            task_assignment = {
-                'task_id': task.task_id,
-                'assigned_to': 'None',
-                #'resource_type': 'None',
-                'resource_id': 'None',
-                'remaining_resource_core':'None'
-
-            }
 
         self.current_task_idx += 1
         done = self.current_task_idx >= len(self.tasks)
 
-        return self._get_state(), reward, processing_info, done, task_assignment
+        return self._get_state(), reward, processing_info, done, {}
 
     def _process_task(self, task, resource_type):
         resource_list = self.resource_availability[resource_type]
-
-        # Find resources that meet the task's requirements
-        candidate_resources = [resource for resource in resource_list if task.cpu_cores <= resource['cores']]
-        #print("candidate_resources................", candidate_resources)
-
-        if candidate_resources:
-            # Choose the resource with the highest cpu core
-            chosen_resource = max(candidate_resources, key=lambda resource: resource['cores'])
-            #print("chosen_resource>>>>>>>>>>>>>>>>>>>>>>>>>>>", chosen_resource)
-
-            processing_delay = chosen_resource['delay']  # Simulated processing delay
-            processing_cost = chosen_resource['cost']  # Simulated processing cost
-            resource_success_reward = 1  # +1 for successful processing
-            chosen_resource['cores'] -= task.cpu_cores
-            resource_distance = chosen_resource['distance']
-            resource_id = resource_list.index(chosen_resource)  # Use the index of the resource as resource_id
-            return {
-                'delay': processing_delay,
-                'cost': processing_cost,
-                'resource_success_reward': resource_success_reward,
-                'distance': resource_distance,
-                'resource_id': resource_id,
-                'remaining_reource_core': chosen_resource['cores']
-            }
-
+        for resource in resource_list:
+            if task.cpu_cores <= resource['cores']:
+                processing_delay = resource['delay']  # Simulated processing delay
+                processing_cost = resource['cost']  # Simulated processing cost
+                resource_success_reward = 1  # +1 for successful processing
+                resource['cores'] -= task.cpu_cores
+                resource_distance = resource['distance']
+                return {'delay': processing_delay, 'cost': processing_cost,
+                        'resource_success_reward': resource_success_reward, 'distance': resource_distance, }
         return None
 
     def _calculate_reward(self, task, processing_info, resource_type):
@@ -253,11 +188,10 @@ class TaskOffloadingEnv(gym.Env):
 
         reward = delay_factor + cost_factor + distance_factor + complexity_factor + resource_success_reward
 
-        #normalized_reward = (reward + 4) / 8  # Normalize the reward between 0 and 1
-        #reward = normalized_reward
+        # normalized_reward = (reward + 4) / 8  # Normalize the reward between 0 and 1
+        # reward = normalized_reward
 
         return reward
-
 
 # DQN Network=================================================================
 class QNetwork(nn.Module):
@@ -350,7 +284,6 @@ def validate_agent(env, agent, num_validation_episodes):
 
     for episode in range(num_validation_episodes):
         state = env.reset()
-        #env.reset_resource_utilization()
         episode_reward = 0
         done = False
 
@@ -390,39 +323,31 @@ def train_double_dqn(env, agent, num_episodes, batch_size, epsilon_decay, valida
     epsilon = 1.0
     epsilon_min = 0.01
     episode_rewards = []
-    episode_losses = []
     validation_rewards = []
-    validation_reward = 0
     episode_cumulative_costs = []
     episode_successful_tasks = []
     episode_unsuccessful_tasks = []
-    vehicle_utilization = []  # List to store vehicle utilization across episodes
-    rsu_utilization = []  # List to store RSU utilization across episodes
-    cloud_server_utilization = []  # List to store cloud server utilization across episodes
 
     replay_buffer = ReplayBuffer(max_size=100000)
 
     for episode in range(num_episodes):
         state = env.reset()
+        #print(state)
         episode_reward = 0
         episode_successful = 0
         episode_unsuccessful = 0
         episode_cumulative_cost = 0
-        episode_task_assignments = []  # List to store task assignments in this episode
+
         done = False
 
         while not done:
             action = agent.select_action(state, epsilon)
-            next_state, reward, processing_info, done, task_assignment = env.step(action)
+            next_state, reward, processing_info, done, _ = env.step(action)
 
             episode_reward += reward
 
-            # print("----------------------------------------------------------------------------")
-            # print(action)
-            # print(task_assignment) # If want to see task assigment details in evry steps
-            # #print(next_state)
-            # print(reward)
-            # print("----------------------------------------------------------------------------")
+            ##After calculating episode rewards
+            #wandb.log({"Episode Reward": episode_reward})
 
             if reward > 0:
                 episode_successful += 1
@@ -435,115 +360,92 @@ def train_double_dqn(env, agent, num_episodes, batch_size, epsilon_decay, valida
             agent.update(replay_buffer, batch_size)
             state = next_state
 
-            episode_task_assignments.append(task_assignment)  # Store task assignment information
-
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
-
         episode_rewards.append(episode_reward)
         episode_cumulative_costs.append(episode_cumulative_cost)
         episode_successful_tasks.append(episode_successful)
         episode_unsuccessful_tasks.append(episode_unsuccessful)
 
-        if (episode + 1) % validation_interval == 0:
+
+        if (episode) % validation_interval == 0:
             validation_reward = validate_agent(env, agent, num_validation_episodes)
             validation_rewards.append(validation_reward)
-            print("##############################################################")
-            print(f"Episode {episode + 1}: Validation Reward = {validation_reward:.2f}")
-            print("##############################################################")
-            wandb.log({ "Validation_reward": np.mean(validation_reward)}),
+            print("##################################################################################################")
+            print(f"Episode {episode}: Validation Reward = {validation_reward:.2f}")
+            print("##################################################################################################")
 
-        print("-----------------------------------------------------------------------------------------------------------------------")
-        print(f"Episode {episode + 1}: Total Reward = {round(episode_reward, 2)}, Successful Tasks = {episode_successful}, Unsuccessful Tasks = {episode_unsuccessful}, Episode Cost = {round(episode_cumulative_cost,2)}, Epsilon={round(epsilon, 4)}")
+        print(f"Episode {episode}: Total Reward = {round(episode_reward, 2)}, Successful Tasks = {episode_successful}, Unsuccessful Tasks = {episode_unsuccessful}, Episode Cost = {round(episode_cumulative_cost,2)}")
 
-        # Collect resource utilization data
-        vehicle_utilization.append(env.resource_utilization['vehicles'])
-        rsu_utilization.append(env.resource_utilization['road_side_units'])
-        cloud_server_utilization.append(env.resource_utilization['cloud_servers'])
+        max_reward = max(episode_rewards)
+        normalized_episode_rewards = [reward / max_reward for reward in episode_rewards]
 
-        # # # Print resource utilization at the end of the episode
-        # print_resource_utilization(vehicle_utilization[episode], "Vehicle")
-        # print_resource_utilization(rsu_utilization[episode], "RSU")
-        # print_resource_utilization(cloud_server_utilization[episode], "Cloud Server")
+        '''
+        wandb.log({"Episode Reward":  normalized_episode_rewards})
+        wandb.log({"Validation Reward": validation_reward})
+        wandb.log({"Successful Tasks": episode_successful})
+        wandb.log({"Unsuccessful Tasks": episode_unsuccessful})
+        wandb.log({"Episode_cumulative_cost": episode_cumulative_cost})
+        '''
 
-        # Log summary statistics for this episode
-        wandb.log({
-            "Mean Episode Reward": np.mean(episode_rewards),
-            "Median Episode Reward": np.median(episode_rewards),
-            "Mean Successful Tasks": np.mean(episode_successful_tasks),
-            "Mean Unsuccessful Tasks": np.mean(episode_unsuccessful_tasks),
-            "Mean Episode Cumulative Cost": np.mean(episode_cumulative_costs),
-            "Epsilon": epsilon
-        })
-
-    return episode_rewards, validation_rewards, episode_cumulative_costs, episode_successful_tasks, episode_unsuccessful_tasks, vehicle_utilization, rsu_utilization, cloud_server_utilization
-
-def print_resource_utilization(resource_utilization, resource_type):
-    print(f"{resource_type} Utilization:")
-    for idx, utilization in enumerate(resource_utilization):
-        print(f"{resource_type} {idx + 1}: {utilization}")
-
-# Resource utilization plot function to normalize utilization between 1% and 100%
-def plot_resource_utilization(utilization_data, resource_name):
-    avg_utilization = np.mean(utilization_data, axis=0)
-    plt.figure(figsize=(10, 6))
-    plt.bar(np.arange(len(avg_utilization)), avg_utilization)
-    plt.xticks(np.arange(len(avg_utilization)), np.arange(1, len(avg_utilization) + 1))
-    plt.xlabel("Resource ID")
-    plt.ylabel(f"{resource_name} Utilization")
-    plt.title(f"{resource_name} Utilization Across Episodes")
-    plt.tight_layout()  # Improve spacing
-    plt.savefig(f'figures\_resources_u1tilization Across Episodes_VTO_DDQN_v7_{resource_name}_{num_episodes}_{num_tasks}.png')
-    plt.show()
+    return  normalized_episode_rewards,validation_rewards, episode_cumulative_costs, episode_successful_tasks, episode_unsuccessful_tasks
 
 if __name__ == "__main__":
     num_tasks = 200
-    num_vehicles = 100
-    num_rsus = 10  # rsus (road side units)
-    num_cloud_servers = 10
+    num_vehicles = 200
+    num_rsus = 1   # rsus (road side units)
+    num_cloud_servers = 1
 
 
-    wandb.login(key="dccc7a8f79009facb77cf648e1bee6a56f8c0876")
-
-    wandb.init(project="VTO v1", config={
-        "num_tasks": num_tasks,
-        "num_vehicles": num_vehicles,
-        "num_rsus": num_rsus,
-        "num_cloud_servers": num_cloud_servers
-    })
+    '''
+    wandb.init(project="task_offloading")
+    wandb.config.num_tasks = num_tasks
+    wandb.config.num_vehicles = num_vehicles
+    wandb.config.num_rsus = num_rsus
+    wandb.config.num_cloud_servers = num_cloud_servers
+    '''
 
     env = TaskOffloadingEnv(num_tasks, num_vehicles, num_rsus, num_cloud_servers)
 
-    state_dim = env.observation_space.shape[0]
-    #print(state_dim)
+    # Display task and resource details before training
+    print("Task and Resource Details before Training:")
+    print("Task Details:")
+    display_table(env.tasks, "Task")
+    print("\nVehicle Details:")
+    display_table(env.resource_availability['vehicles'], "Vehicle")
+    print("\nRoad Side Units Details:")
+    display_table(env.resource_availability['road_side_units'], "Road Side Unit")
+    print("\nCloud Server Details:")
+    display_table(env.resource_availability['cloud_servers'], "Cloud Server")
 
+    state_dim = env.observation_space.shape[0]
+    print(state_dim)
     action_dim = env.action_space.n
+
     agent = DoubleDQNAgent(state_dim, action_dim)
 
     epsilon_decay = 0.995
     batch_size = 32
-    num_episodes = 1000
+    num_episodes = 100
 
     validation_interval = 10  # Validate the agent every 200 episodes
     num_validation_episodes = 10  # Number of episodes for validation
 
-    episode_rewards, validation_rewards, episode_cumulative_costs, episode_successful_tasks, episode_unsuccessful_tasks, vehicle_utilization, rsu_utilization, cloud_server_utilization = train_double_dqn(env, agent, num_episodes, batch_size, epsilon_decay, validation_interval, num_validation_episodes)
+    normalized_episode_rewards, validation_rewards, episode_cumulative_costs, episode_successful_tasks, episode_unsuccessful_tasks = train_double_dqn(env, agent, num_episodes, batch_size, epsilon_decay, validation_interval,  num_validation_episodes)
 
-    # # Saving episode rewards, successful tasks, and unsuccessful tasks to a CSV file
-    # with open('figures/episode_results.csv', 'w', newline='') as csvfile:
-    #     csv_writer = csv.writer(csvfile)
-    #     csv_writer.writerow(['Episode', 'Reward', 'Successful Tasks', 'Unsuccessful Tasks'])
-    #     for episode, (reward, successful, unsuccessful) in enumerate(zip(episode_rewards, episode_successful_tasks, episode_unsuccessful_tasks)):
-    #         csv_writer.writerow([episode, reward, successful, unsuccessful])
 
-    max_reward = max(episode_rewards)
-    normalized_episode_rewards = [reward / max_reward for reward in episode_rewards]
+    # Saving episode rewards, successful tasks, and unsuccessful tasks to a CSV file
+    with open('episode_results.csv', 'w', newline='') as csvfile:
+        csv_writer = csv.writer(csvfile)
+        csv_writer.writerow(['Episode', 'Reward', 'Successful Tasks', 'Unsuccessful Tasks'])
+        for episode, (reward, successful, unsuccessful) in enumerate(zip( normalized_episode_rewards, episode_successful_tasks, episode_unsuccessful_tasks)):
+            csv_writer.writerow([episode, reward, successful, unsuccessful])
 
-    # Plotting episode reward
+    # Plotting reward
     plt.plot(normalized_episode_rewards)
     plt.xlabel("Episode")
     plt.ylabel("Average Episode Reward")
     plt.title("Average Episode Rewards")
-    plt.savefig(f'figures\episode_rewards_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
+    plt.savefig('episode_rewards_VTO_DDQN_v5.png')
     plt.show()
 
     # Plotting successful and unsuccessful tasks
@@ -553,7 +455,7 @@ if __name__ == "__main__":
     plt.ylabel("Number of Tasks")
     plt.title("Successful and Unsuccessful Tasks")
     plt.legend()
-    plt.savefig(f'figures\Successful_and_Unsuccessful_Tasks_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
+    plt.savefig('Successful_and_Unsuccessful_Tasks_VTO_DDQN_v5.png')
     plt.show()
 
     # Plot cumulative cost graph at the end of each episode
@@ -562,7 +464,7 @@ if __name__ == "__main__":
     plt.ylabel("Cumulative Cost")
     plt.title("Episode Cumulative Costs")
     plt.legend()
-    plt.savefig(f'figures\episode_cumulative_cost_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
+    plt.savefig('episode_cumulative_cost_VTO_DDQN_v5.png')
     plt.show()
 
     # Plot validation rewards
@@ -571,28 +473,9 @@ if __name__ == "__main__":
     plt.ylabel("Average Validation Reward")
     plt.title("Average Validation Rewards")
     plt.legend()
-    plt.savefig(f'figures\Average Validation Rewards_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
+    plt.savefig('Average Validation Rewards_VTO_DDQN_v5.png')
     plt.show()
 
-    # Plot normalized resource utilization between 1% and 100% for each type of resource using bar plots
-    plot_resource_utilization(vehicle_utilization, "Vehicle")
-    plot_resource_utilization(rsu_utilization, "RSU")
-    plot_resource_utilization(cloud_server_utilization, "Cloud Server")
-
-    # Calculate mean utilization values for each resource
-    mean_vehicle_utilization = np.mean(vehicle_utilization, axis=1)
-    mean_rsu_utilization = np.mean(rsu_utilization, axis=1)
-    mean_cloud_server_utilization = np.mean(cloud_server_utilization, axis=1)
-
-    x = [0, 1, 2]
-    y = [mean_vehicle_utilization[0], mean_rsu_utilization[0],
-         mean_cloud_server_utilization[0]]  # Mean utilization values
-    labels = ['Vehicles', 'RSUs', 'Cloud Servers']
-
-    plt.bar(x, y, tick_label=labels)
-    plt.xlabel('Resource')
-    plt.ylabel('Mean Utilization')
-    plt.title('Mean Resource Utilization, Vehicles, RSUs, and CLoud Servers')
-    plt.tight_layout()
-    plt.savefig(f'figures\Mean Resource Utilization_VTO_DDQN_v7_{num_episodes}_{num_tasks}.png')
-    plt.show()
+    # After all training is complete
+    wandb.log({"Reward Graph": plt})
+    wandb.finish()
