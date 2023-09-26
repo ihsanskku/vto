@@ -90,20 +90,43 @@ class GCN(nn.Module):
 
 
 # Define a DQN class
+# class DQN(nn.Module):
+#     def __init__(self, input_dim, hidden_dim, output_dim):
+#         super(DQN, self).__init__()
+#         self.gcn = GCN(input_dim, hidden_dim, 128)  # (input_dim[node feature 5], hidden_dim, output_dim) for GCN model
+#         self.fc1 = nn.Linear(128, hidden_dim)
+#         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+#         self.fc3 = nn.Linear(hidden_dim, 1)  # Output Q-values for each node
+#
+#     def forward(self, data):
+#         embedding = self.gcn(data)
+#         x = F.relu(self.fc1(embedding))
+#         x = F.relu(self.fc2(x))
+#         q_values = self.fc3(x)
+#         #q_values = torch.sum(q_values, dim=1)
+#         return q_values
+
+
 class DQN(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(DQN, self).__init__()
-        self.gcn = GCN(input_dim, hidden_dim, 128)  # (input_dim[node feature 5], hidden_dim, output_dim) for GCN model
-        self.fc1 = nn.Linear(128, hidden_dim)
+        self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        # self.avg_pooling = nn.AvgPool2d(hidden_dim)
+        self.fc1 = nn.Linear(hidden_dim * (output_dim + num_tasks), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)  # Output Q-values for each node
+        self.fc3 = nn.Linear(hidden_dim, 1)    # Output Q-values for each node
 
     def forward(self, data):
-        embedding = self.gcn(data)
+        node_feature, edge_index = data.x, data.edge_index
+        embedding = F.relu(self.conv1(node_feature, edge_index))
+        embedding = self.conv2(embedding, edge_index)
+        # embedding = self.avg_pooling(embedding)
+        embedding = torch.flatten(embedding)
         x = F.relu(self.fc1(embedding))
         x = F.relu(self.fc2(x))
         q_values = self.fc3(x)
-        #q_values = torch.sum(q_values, dim=1)
+        # q_values = torch.sum(q_values, dim=1)
         return q_values
 
 
