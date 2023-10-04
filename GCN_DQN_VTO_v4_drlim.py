@@ -4,8 +4,10 @@ import networkx as nx
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCNConv, global_mean_pool, global_add_pool
 from torch_geometric.data import Data
+from torch_geometric.loader import DataLoader
+
 import random
 import numpy as np
 import gym
@@ -87,31 +89,32 @@ class GCN(nn.Module):
         x = self.conv2(x, edge_index)
         return x
 
+
 class DQN(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(DQN, self).__init__()
         self.conv1 = GCNConv(input_dim, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, hidden_dim)
-        # self.avg_pooling = nn.AvgPool2d(hidden_dim)
-        self.fc1 = nn.Linear(hidden_dim * (output_dim + num_tasks), hidden_dim)
+        self.avg_pooling = global_mean_pool
+        self.fc1 = nn.Linear(hidden_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)    # Output Q-values for each node
+        self.fc3 = nn.Linear(hidden_dim, output_dim)    # Output Q-values for each node
 
     def forward(self, data):
         node_feature, edge_index = data.x, data.edge_index
         embedding = F.relu(self.conv1(node_feature, edge_index))
         embedding = self.conv2(embedding, edge_index)
-        # embedding = self.avg_pooling(embedding)
-        embedding = torch.flatten(embedding)
+        embedding = self.avg_pooling(embedding, batch=data.batch)
         x = F.relu(self.fc1(embedding))
         x = F.relu(self.fc2(x))
-        q_values = self.fc3(x)
-        # q_values = torch.sum(q_values, dim=1)
+        x = self.fc3(x)
+        q_values = F.log_softmax(x, dim=1)
+
         return q_values
 
 # ===============================================================================================
 
-def process_network(vehicles, rsus, cloud_servers, tasks):
+def process_network(vehicles, rsus, cloud_servers, tasks, graph_idx):
     # Create a graph
     G = nx.Graph()
 
@@ -145,6 +148,7 @@ def process_network(vehicles, rsus, cloud_servers, tasks):
     edges = list(G.edges())
     edge_index = torch.tensor([[node_to_index[src], node_to_index[dst]] for src, dst in edges],
                               dtype=torch.long).t().contiguous()
+    batch_index = torch.tensor([graph_idx] * G.number_of_nodes())
 
     # Create feature vectors for nodes, considering different attributes for task nodes
     x = torch.tensor([
@@ -157,7 +161,7 @@ def process_network(vehicles, rsus, cloud_servers, tasks):
         for node in G.nodes()
     ], dtype=torch.float)
 
-    data = Data(x=x, edge_index=edge_index)
+    data = Data(x=x, edge_index=edge_index, batch_index=batch_index)
 
     return G, data
 
@@ -252,7 +256,8 @@ class TaskAllocationEnv(gym.Env):
         self.vehicles, self.rsus, self.cloud_servers = generate_devices(num_vehicles, num_rsus, num_cloud_servers)
 
         # Initialize network
-        self.G, self.data = process_network(self.vehicles, self.rsus, self.cloud_servers, self.tasks)
+        self.graph_idx = 0
+        self.G, self.data = process_network(self.vehicles, self.rsus, self.cloud_servers, self.tasks, self.graph_idx)
 
     def reset(self):
         # Reset the environment to the initial state
@@ -268,7 +273,8 @@ class TaskAllocationEnv(gym.Env):
         self.vehicles, self.rsus, self.cloud_servers = generate_devices(num_vehicles, num_rsus, num_cloud_servers)
 
         # Reset  network
-        self.G, self.data = process_network(self.vehicles, self.rsus, self.cloud_servers, self.tasks)
+        self.graph_idx += 1
+        self.G, self.data = process_network(self.vehicles, self.rsus, self.cloud_servers, self.tasks, self.graph_idx)
 
         # Initialize state
         self.state = self.data
@@ -345,19 +351,19 @@ class ReplayBuffer:
 
 
 # Create your network
-num_tasks = 2
-num_vehicles = 2
-num_rsus = 2
-num_cloud_servers = 2
+num_tasks = 50
+num_vehicles =50
+num_rsus = 20
+num_cloud_servers =10
 
-#wandb.login(key="31e5f2e0e26bf315d832e7fa7185b9ddd59adc32")
+wandb.login(key="31e5f2e0e26bf315d832e7fa7185b9ddd59adc32")
 
-# wandb.init(project="VTO_DQN_GCN", config={
-#      "num_tasks": num_tasks,
-#      "num_vehicles": num_vehicles,
-#      "num_rsus": num_rsus,
-#      "num_cloud_servers": num_cloud_servers
-# })
+wandb.init(project="VTO_DQN_GCN", config={
+     "num_tasks": num_tasks,
+     "num_vehicles": num_vehicles,
+     "num_rsus": num_rsus,
+     "num_cloud_servers": num_cloud_servers
+})
 
 # Instantiate the custom environment
 env = TaskAllocationEnv(num_tasks, num_vehicles, num_rsus, num_cloud_servers)
@@ -377,7 +383,7 @@ Experience = namedtuple("Experience", field_names=["state", "action", "reward", 
 
 # Define DQN hyperparameters
 buffer_size = 10000  # Size of the replay buffer
-batch_size = 64  # Mini-batch size for training
+batch_size = 128  # Mini-batch size for training
 
 learning_rate_dqn = 0.01
 gamma = 0.99  # Discount factor
@@ -390,7 +396,7 @@ dqn_optimizer = torch.optim.Adam(dqn_model.parameters(), lr=learning_rate_dqn)
 dqn_loss = nn.MSELoss()
 
 # DQN Training
-num_episodes = 100
+num_episodes = 50
 episode_rewards = []  # List to store episode rewards
 
 # Create a replay buffer
@@ -400,7 +406,7 @@ replay_buffer = ReplayBuffer(buffer_size)
 for episode in range(num_episodes):
 
     state = env.reset()
-    print("State (Data.x)\n", env.state.x)
+    # print("State (Data.x)\n", env.state.x)
 
     episode_reward = 0.0
     successful_tasks = 0
@@ -410,17 +416,17 @@ for episode in range(num_episodes):
 
     while not done:
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
-        print("epsilon: ", epsilon)
+        #print("epsilon: ", epsilon)
         if random.random() < epsilon:
             action = env.action_space.sample()  # Explore (select a random action)
-            print("Random Action:", action)
+            #print("Random Action:", action)
         else:
                with torch.no_grad():
                   # Pass both the node features and edge indices to the GCN model
                   q_value = dqn_model(state)
-                  print("Q_values++++++++++++++++++++++++++++++++++++++++++ \n", q_value)
+                  #print("Q_values++++++++++++++++++++++++++++++++++++++++++ \n", q_value)
                   action = q_value.argmax().item()  # Exploit (select the action with the highest Q-value)
-                  print("DQN action:", action)
+                  #print("DQN action:", action)
 
         next_state, reward, done, _ = env.step(action)
         episode_reward += reward
@@ -442,41 +448,46 @@ for episode in range(num_episodes):
         # Sample a mini-batch from the replay buffer and perform DQN update
         if len(replay_buffer.buffer) > batch_size:
             states_batch, actions_batch, rewards_batch, next_states_batch, dones_batch = replay_buffer.sample_batch(batch_size)
+
             # Convert the mini-batch to PyTorch tensors
-            states_batch = torch.stack(states_batch)
-            actions_batch = torch.tensor(actions_batch)
-            rewards_batch = torch.tensor(rewards_batch)
-            next_states_batch = torch.stack(next_states_batch)
-            dones_batch = torch.tensor(dones_batch)
+            batch_states = DataLoader(states_batch, batch_size=batch_size, shuffle=False)
+            batch_actions = torch.tensor(actions_batch)
+            batch_rewards = torch.tensor(rewards_batch)
+            batch_next_states = DataLoader(next_states_batch, batch_size=batch_size, shuffle=False)
+            batch_dones = torch.tensor(dones_batch)
 
             # Calculate the Q-values for the current and next states
-            q_values = dqn_model(states_batch)
-            next_q_values = target_dqn_model(next_states_batch)
+            for batch in batch_states:
+                q_values = dqn_model(batch)
+            for batch in batch_next_states:
+                next_q_values = target_dqn_model(batch)
 
             # Calculate the target Q-values
-            target_q_values = rewards_batch + (1 - dones_batch) * gamma * next_q_values.max(dim=1)[0]
+            target_q_values = batch_rewards + batch_dones * gamma * next_q_values.max(dim=1)[0]
 
             # Compute the loss
-            loss = dqn_loss(q_values.gather(dim=1, index=actions_batch.unsqueeze(1).long()), target_q_values.float())
-
+            loss = dqn_loss(q_values.gather(dim=1, index=batch_actions.unsqueeze(1).long()), target_q_values.float())
+            print("DQN_loss: ", loss)
             # Backpropagation and optimization
             dqn_optimizer.zero_grad()
             loss.backward()
             dqn_optimizer.step()
 
-        #print("next_state \n", state.x)
-        # Log summary statistics for this episode
-        # wandb.log({
-        #     "Epsilon": epsilon
-        # })
+            #print("next_state \n", state.x)
+            #Log summary statistics for this episode
+            wandb.log({
+                 "Epsilon": epsilon,
+                "DQN_loss": loss
+
+             })
 
     episode_rewards.append(episode_reward)
 
     #Log summary statistics for this episode
-    # wandb.log({
-    #     "Mean Episode Reward": np.mean(episode_rewards),
-    #
-    # })
+    wandb.log({
+         "Mean Episode Reward": np.mean(episode_rewards),
+
+     })
 
     # Print the counts of successful, unsuccessful tasks, and episode reward for this episode
     #print()

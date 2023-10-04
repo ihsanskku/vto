@@ -76,17 +76,17 @@ def generate_devices(num_vehicles, num_rsus, num_cloud_servers):
 
 
 # Define the GCN model
-class GCN(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(GCN, self).__init__()
-        self.conv1 = GCNConv(input_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, output_dim)
-
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        x = F.relu(self.conv1(x, edge_index))
-        x = self.conv2(x, edge_index)
-        return x
+# class GCN(nn.Module):
+#     def __init__(self, input_dim, hidden_dim, output_dim):
+#         super(GCN, self).__init__()
+#         self.conv1 = GCNConv(input_dim, hidden_dim)
+#         self.conv2 = GCNConv(hidden_dim, output_dim)
+#
+#     def forward(self, data):
+#         x, edge_index = data.x, data.edge_index
+#         x = F.relu(self.conv1(x, edge_index))
+#         x = self.conv2(x, edge_index)
+#         return x
 
 
 # Define a DQN class
@@ -115,7 +115,7 @@ class DQN(nn.Module):
         # self.avg_pooling = nn.AvgPool2d(hidden_dim)
         self.fc1 = nn.Linear(hidden_dim * (output_dim + num_tasks), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)    # Output Q-values for each node
+        self.fc3 = nn.Linear(hidden_dim, output_dim)    # Output Q-values for each node
 
     def forward(self, data):
         node_feature, edge_index = data.x, data.edge_index
@@ -123,6 +123,7 @@ class DQN(nn.Module):
         embedding = self.conv2(embedding, edge_index)
         # embedding = self.avg_pooling(embedding)
         embedding = torch.flatten(embedding)
+        print(" falttern emddeding", embedding )
         x = F.relu(self.fc1(embedding))
         x = F.relu(self.fc2(x))
         q_values = self.fc3(x)
@@ -354,10 +355,10 @@ class TaskAllocationEnv(gym.Env):
 
 
 # Create your network
-num_tasks = 100
-num_vehicles = 100
-num_rsus = 50
-num_cloud_servers = 5
+num_tasks = 2
+num_vehicles = 1
+num_rsus = 1
+num_cloud_servers = 1
 
 #wandb.login(key="31e5f2e0e26bf315d832e7fa7185b9ddd59adc32")
 
@@ -393,14 +394,14 @@ dqn_optimizer = torch.optim.Adam(dqn_model.parameters(), lr=learning_rate_dqn)
 dqn_loss = nn.MSELoss()
 
 # DQN Training
-num_episodes = 1000
+num_episodes = 10
 episode_rewards = []  # List to store episode rewards
 
 
 for episode in range(num_episodes):
 
     state = env.reset()
-    #print("State (Data.x)\n", env.state.x)
+    print("State (Data.x)\n", env.state.x)
 
     episode_reward = 0.0
     successful_tasks = 0
@@ -417,7 +418,7 @@ for episode in range(num_episodes):
         else:
             with torch.no_grad():
                 q_value = dqn_model(state)
-                #print("Q_values \n", q_value)
+                print("Q_values \n", q_value)
                 action = q_value.argmax().item() #Exploit (select the action with the highest Q-value)
                 print("DQN action:", action)
 
