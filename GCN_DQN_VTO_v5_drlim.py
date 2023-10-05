@@ -103,12 +103,11 @@ class DQN(nn.Module):
     def forward(self, data):
         node_feature, edge_index = data.x, data.edge_index
         embedding = F.relu(self.conv1(node_feature, edge_index))
-        embedding = self.conv2(embedding, edge_index)
+        embedding = F.relu(self.conv2(embedding, edge_index))
         embedding = self.avg_pooling(embedding, batch=data.batch)
         x = F.relu(self.fc1(embedding))
         x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        q_values = F.log_softmax(x, dim=1)
+        q_values = F.relu(self.fc3(x))
 
         return q_values
 
@@ -351,18 +350,18 @@ class ReplayBuffer:
 
 
 # Create your network
-num_tasks = 100
-num_vehicles =100
-num_rsus = 100
-num_cloud_servers =10
+num_tasks = 10
+num_vehicles = 10
+num_rsus = 5
+num_cloud_servers = 2
 
-wandb.login(key="31e5f2e0e26bf315d832e7fa7185b9ddd59adc32")
+#wandb.login(key="31e5f2e0e26bf315d832e7fa7185b9ddd59adc32")
 
 wandb.init(project="VTO_DQN_GCN", config={
-     "num_tasks": num_tasks,
-     "num_vehicles": num_vehicles,
-     "num_rsus": num_rsus,
-     "num_cloud_servers": num_cloud_servers
+      "num_tasks": num_tasks,
+      "num_vehicles": num_vehicles,
+      "num_rsus": num_rsus,
+      "num_cloud_servers": num_cloud_servers
 })
 
 # Instantiate the custom environment
@@ -396,7 +395,7 @@ dqn_optimizer = torch.optim.Adam(dqn_model.parameters(), lr=learning_rate_dqn)
 dqn_loss = nn.MSELoss()
 
 # DQN Training
-num_episodes = 50
+num_episodes = 500
 episode_rewards = []  # List to store episode rewards
 
 # Create a replay buffer
@@ -416,7 +415,7 @@ for episode in range(num_episodes):
 
     while not done:
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
-        #print("epsilon: ", epsilon)
+        print("epsilon: ", epsilon)
         if random.random() < epsilon:
             action = env.action_space.sample()  # Explore (select a random action)
             print("Random Action:", action)
@@ -424,7 +423,7 @@ for episode in range(num_episodes):
                with torch.no_grad():
                   # Pass both the node features and edge indices to the GCN model
                   q_value = dqn_model(state)
-                  #print("Q_values++++++++++++++++++++++++++++++++++++++++++ \n", q_value)
+                  print("Q_values++++++++++++++++++++++++++++++++++++++++++ \n", q_value)
                   action = q_value.argmax().item()  # Exploit (select the action with the highest Q-value)
                   print("DQN action:", action)
 
@@ -473,21 +472,21 @@ for episode in range(num_episodes):
             loss.backward()
             dqn_optimizer.step()
 
-            #print("next_state \n", state.x)
-            #Log summary statistics for this episode
+            # print("next_state \n", state.x)
+            # Log summary statistics for this episode
             wandb.log({
-                 "Epsilon": epsilon,
+                "Epsilon": epsilon,
                 "DQN_loss": loss
 
-             })
+            })
 
     episode_rewards.append(episode_reward)
 
-    #Log summary statistics for this episode
+    # Log summary statistics for this episode
     wandb.log({
-         "Mean Episode Reward": np.mean(episode_rewards),
+        "Mean Episode Reward": np.mean(episode_rewards),
 
-     })
+    })
 
     # Print the counts of successful, unsuccessful tasks, and episode reward for this episode
     #print()
