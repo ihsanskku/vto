@@ -94,7 +94,9 @@ class DQN(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(DQN, self).__init__()
         self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.bn1=nn.BatchNorm1d(hidden_dim)
         self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.bn2 = nn.BatchNorm1d(hidden_dim)
         self.avg_pooling = global_mean_pool
         self.fc1 = nn.Linear(hidden_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
@@ -103,10 +105,10 @@ class DQN(nn.Module):
     def forward(self, data):
         node_feature, edge_index = data.x, data.edge_index
         node_feature = F.normalize(node_feature, dim=0)
-        #edge_index = F.normalize(edge_index, dim=0)
-
         embedding = F.relu(self.conv1(node_feature, edge_index))
         embedding = F.relu(self.conv2(embedding, edge_index))
+        x = F.relu(self.bn1(self.conv1(node_feature, edge_index)))
+        x = F.relu(self.bn2(self.conv2(x, edge_index)))
         embedding = self.avg_pooling(embedding, batch=data.batch)
         x = F.relu(self.fc1(F.normalize(embedding, dim=0)))
         x = F.relu(self.fc2(x))
@@ -285,14 +287,14 @@ class TaskAllocationEnv(gym.Env):
         return self.state
 
     def step(self, action):
-        print("Selected node", self.data.x[action])
+        #print("Selected node", self.data.x[action])
 
         task = self.tasks[self.current_task_idx]
 
         # Calculate the reward and get the modified selected_node
         reward = self._calculate_reward(task)
 
-        print(f"Step {env.current_step}: Step Reward: {reward}, Selected_Task: {task.__dict__}, Selected Node: CPU, {self.data.x[action][0]}, BW:{self.data.x[action][1]}, Pro.delay: {self.data.x[action][2]}, Cost: {self.data.x[action][3]}, Dist: {self.data.x[action][4]}")
+       #print(f"Step {env.current_step}: Step Reward: {reward}, Selected_Task: {task.__dict__}, Selected Node: CPU, {self.data.x[action][0]}, BW:{self.data.x[action][1]}, Pro.delay: {self.data.x[action][2]}, Cost: {self.data.x[action][3]}, Dist: {self.data.x[action][4]}")
 
         #print()
         # print( "Data after action\n", self.data.x)
@@ -300,7 +302,7 @@ class TaskAllocationEnv(gym.Env):
         next_state = self.data
         #print("Next_state\n", next_state.x)
 
-        print("--------------------------------------------------------------------------------------------------------")
+        #print("--------------------------------------------------------------------------------------------------------")
 
         self.current_task_idx += 1
         self.current_step += 1
@@ -352,12 +354,69 @@ class ReplayBuffer:
         states, actions, rewards, next_states, dones = zip(*batch)
         return states, actions, rewards, next_states, dones
 
+def validate_agent(env, num_validation_episodes):
+    validation_rewards = []
+
+    for _ in range(num_validation_episodes):
+        state = env.reset()
+        episode_reward = 0.0
+
+        while True:
+            with torch.no_grad():
+                # Pass both the node features and edge indices to the GCN model
+                q_value = dqn_model(state)
+                # print("Q_values++++++++++++++++++++++++++++++++++++++++++ \n", q_value)
+                action = q_value.argmax().item()  # Exploit (select the action with the highest Q-value)
+                # print("DQN action:", action)
+            next_state, reward, done, _ = env.step(action)
+            episode_reward += reward
+
+            if done:
+                break
+
+        validation_rewards.append(episode_reward)
+
+    # Calculate and return the average validation reward
+    avg_validation_reward = np.mean(validation_rewards)
+    return avg_validation_reward
+# Play using the saved DQN model
+def play_with_saved_model(model_path, num_episodes=100):
+    # Load the saved DQN model
+    dqn_model.load_state_dict(torch.load(model_path))
+    dqn_model.eval()  # Set the model to evaluation mode (no training)
+
+    play_rewards = []
+
+    for play_episode in range(num_episodes):
+        state = env.reset()
+        play_episode_reward = 0.0
+
+        while True:
+            with torch.no_grad():
+                q_value = dqn_model(state)
+                action = q_value.argmax().item()
+
+            next_state, reward, done, _ = env.step(action)
+            play_episode_reward += reward
+
+            if done:
+                break
+
+        # Log the average validation reward using wandb
+        wandb.log({"Play Reward": play_episode_reward})
+        play_rewards.append(play_episode_reward)
+
+    return play_rewards
 
 # Create your network
-num_tasks = 100
-num_vehicles = 100
-num_rsus = 50
+num_tasks = 50
+num_vehicles = 30
+num_rsus = 30
 num_cloud_servers = 5
+
+validation_rewards = []
+validation_interval = 5  # Validate the agent every 5 episodes
+num_validation_episodes = 50  # Number of episodes for validation
 
 wandb.login(key="31e5f2e0e26bf315d832e7fa7185b9ddd59adc32")
 wandb.init(project="VTO_test_DQN_GCN", config={
@@ -397,12 +456,16 @@ dqn_optimizer = torch.optim.Adam(dqn_model.parameters(), lr=learning_rate_dqn)
 dqn_loss = nn.MSELoss()
 
 # DQN Training
-num_episodes = 150
+num_episodes = 100
 episode_rewards = []  # List to store episode rewards
 
 # Create a replay buffer
 replay_buffer = ReplayBuffer(buffer_size)
 
+# Define early stopping parameters
+early_stopping_patience = 20  # Number of epochs without improvement before early stopping
+best_validation_reward = float("-inf")  # Initialize with negative infinity
+epochs_without_improvement = 0
 
 for episode in range(num_episodes):
 
@@ -417,17 +480,17 @@ for episode in range(num_episodes):
 
     while not done:
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
-        print("epsilon: ", epsilon)
+        #print("epsilon: ", epsilon)
         if random.random() < epsilon:
             action = env.action_space.sample()  # Explore (select a random action)
-            print("Random Action:", action)
+            #print("Random Action:", action)
         else:
                with torch.no_grad():
                   # Pass both the node features and edge indices to the GCN model
                   q_value = dqn_model(state)
                   #print("Q_values++++++++++++++++++++++++++++++++++++++++++ \n", q_value)
                   action = q_value.argmax().item()  # Exploit (select the action with the highest Q-value)
-                  print("DQN action:", action)
+                  #print("DQN action:", action)
 
         next_state, reward, done, _ = env.step(action)
         episode_reward += reward
@@ -438,7 +501,6 @@ for episode in range(num_episodes):
             successful_tasks += 1
         else:
             unsuccessful_tasks += 1
-
 
          # Store the experience in the replay buffer
         experience = Experience(state, action, reward, next_state, done)
@@ -468,7 +530,8 @@ for episode in range(num_episodes):
 
             # Compute the loss
             loss = dqn_loss(q_values.gather(dim=1, index=batch_actions.unsqueeze(1).long()), target_q_values.float())
-            print("DQN_loss: ", loss)
+
+            #print("DQN_loss: ", loss)
             # Backpropagation and optimization
             dqn_optimizer.zero_grad()
             loss.backward()
@@ -479,16 +542,41 @@ for episode in range(num_episodes):
             wandb.log({
                 "Epsilon": epsilon,
                 "DQN_loss": loss
-
             })
 
     episode_rewards.append(episode_reward)
+    torch.save(dqn_model.state_dict(), 'dqn_model.pth')
 
     #Log summary statistics for this episode
     wandb.log({
         "Mean Episode Reward": np.mean(episode_rewards),
 
     })
+
+    if (episode + 1) % validation_interval == 0:
+
+        print("--------------------------------------------------------------------------------------------------------")
+
+        avg_validation_reward = validate_agent(env, num_validation_episodes)
+
+        # Check if the validation reward improved
+        if avg_validation_reward > best_validation_reward:
+            best_validation_reward = avg_validation_reward
+            epochs_without_improvement = 0
+            # Save the model (optional)
+            torch.save(dqn_model.state_dict(), 'best_dqn_model.pth')
+        else:
+            epochs_without_improvement += 1
+
+        print(f"Validation Episode {episode + 1} - Average Reward: {avg_validation_reward}")
+
+        # Log the average validation reward using wandb
+        wandb.log({"Validation Avg Reward": avg_validation_reward})
+
+    # Check for early stopping
+    if epochs_without_improvement >= early_stopping_patience:
+        print("Early stopping: No improvement for too many epochs.")
+        break  # End training
 
     # Print the counts of successful, unsuccessful tasks, and episode reward for this episode
     #print()
@@ -503,4 +591,21 @@ plt.plot(episode_rewards)
 plt.xlabel("Episode")
 plt.ylabel("Episode Reward")
 plt.title("DQN Episode Rewards")
+plt.show()
+
+# Save the DQN model to a file (already saved in the train_dqn function)
+
+# Play using the saved DQN model
+play_results = play_with_saved_model('dqn_model.pth', num_episodes=30)
+
+# Print and visualize play results
+print("Play Results (Episode Rewards):")
+for i, reward in enumerate(play_results):
+    print(f"Episode {i + 1}: {reward}")
+
+# Plot episode rewards during playing
+plt.plot(play_results)
+plt.xlabel("Episode")
+plt.ylabel("Episode Reward")
+plt.title("DQN Episode Rewards (Playing)")
 plt.show()
