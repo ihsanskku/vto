@@ -89,7 +89,6 @@ class GCN(nn.Module):
         x = self.conv2(x, edge_index)
         return x
 
-
 class DQN(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(DQN, self).__init__()
@@ -410,7 +409,7 @@ def play_with_saved_model(model_path, num_episodes=100):
 
 # Create your network
 num_tasks = 50
-num_vehicles = 30
+num_vehicles = 50
 num_rsus = 30
 num_cloud_servers = 5
 
@@ -456,7 +455,7 @@ dqn_optimizer = torch.optim.Adam(dqn_model.parameters(), lr=learning_rate_dqn)
 dqn_loss = nn.MSELoss()
 
 # DQN Training
-num_episodes = 100
+num_episodes = 50
 episode_rewards = []  # List to store episode rewards
 
 # Create a replay buffer
