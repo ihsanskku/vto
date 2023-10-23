@@ -8,6 +8,14 @@ from torch_geometric.nn import GCNConv, global_mean_pool, global_add_pool
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 
+import random
+import numpy as np
+import gym
+from gym import spaces
+import matplotlib.pyplot as plt
+import wandb
+from collections import namedtuple, deque
+
 import networkx as nx
 import torch
 import torch.nn as nn
@@ -81,7 +89,7 @@ def generate_devices(num_vehicles, num_rsus, num_cloud_servers):
                          distance=random.randint(50, 200)) for _ in range(num_rsus)]
     cloud_servers = [CloudServer(cpu_cores=random.randint(800, 900), bandwidth=random.randint(200, 201),
                                  processing_delay=random.randint(5, 6), cost=3,
-                                 distance= 100) for _ in range(num_cloud_servers)]
+                                 distance= 100) for _ in range(num_cloud_servers)] #cloud distance is just imagi
     return vehicles, rsus, cloud_servers
 
 
@@ -109,18 +117,25 @@ class DQN(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, output_dim)    # Output Q-values for each node
 
-    def forward(self, data):
+    def forward(self, data, train=False):
         node_feature, edge_index = data.x, data.edge_index
         node_feature = F.normalize(node_feature, dim=0)
-        embedding = F.relu(self.conv1(node_feature, edge_index))
-        embedding = F.relu(self.conv2(embedding, edge_index))
-        x = F.relu(self.bn1(self.conv1(node_feature, edge_index)))
-        x = F.relu(self.bn2(self.conv2(x, edge_index)))
-        embedding = self.avg_pooling(embedding, batch=data.batch)
+        # embedding = F.relu(self.conv1(node_feature, edge_index))
+        # embedding = F.relu(self.conv2(embedding, edge_index))
+        embedding = F.relu(self.bn1(self.conv1(node_feature, edge_index)))
+        embedding = F.relu(self.bn2(self.conv2(embedding, edge_index))) # (51, 64)
+        # embedding = self.avg_pooling(embedding, batch=data.batch)
+        # You need pick just one node for this one step. embedding.shape should be (1 64)
+        if train is True:
+            assert embedding.shape == (128, 64)
+        else:
+            assert embedding.shape == (1, 64)
+
         x = F.relu(self.fc1(F.normalize(embedding, dim=0)))
         x = F.relu(self.fc2(x))
         #q_values = F.relu(self.fc3(x))
         q_values = self.fc3(x)
+
 
         return q_values
 
@@ -417,10 +432,10 @@ def play_with_saved_model(model_path, num_episodes=100):
     return play_rewards
 
 # Create your network
-num_tasks = 100
+num_tasks = 10
 num_vehicles = 20
 num_rsus = 20
-num_cloud_servers = 5
+num_cloud_servers = 1
 
 validation_rewards = []
 validation_interval = 5  # Validate the agent every 5 episodes
@@ -458,13 +473,13 @@ learning_rate_dqn = 0.005
 gamma = 0.99  # Discount factor
 epsilon = 1.0
 epsilon_min = 0.01
-epsilon_decay = 0.995
+epsilon_decay = 0.998
 # Define the optimizer for the DQN
 dqn_optimizer = torch.optim.Adam(dqn_model.parameters(), lr=learning_rate_dqn)
 dqn_loss = nn.MSELoss()
 
 # DQN Training
-num_episodes = 70
+num_episodes = 100
 episode_rewards = []  # List to store episode rewards
 
 # Create a replay buffer
@@ -529,9 +544,9 @@ for episode in range(num_episodes):
 
             # Calculate the Q-values for the current and next states
             for batch in batch_states:
-                q_values = dqn_model(batch)
+                q_values = dqn_model(batch, train=True)
             for batch in batch_next_states:
-                next_q_values = target_dqn_model(batch)
+                next_q_values = target_dqn_model(batch, train=True)
 
             # Calculate the target Q-values
             target_q_values = batch_rewards + batch_dones * gamma * next_q_values.max(dim=1)[0]
